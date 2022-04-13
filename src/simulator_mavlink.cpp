@@ -99,6 +99,9 @@ void Simulator::run() {
 
 				for (int i = 0; i < len; i++) {
 					if (mavlink_parse_char(MAVLINK_COMM_0, _buf[i], &msg, &mavlink_status)) {
+						mavlink_mtx_.lock();
+						connected_flag = true;
+						mavlink_mtx_.unlock();
 						handle_message(&msg);
 					}
 				}
@@ -112,16 +115,20 @@ void Simulator::send_thread() {
 	send_heartbeat();
 
 	while (1) {
+		uint64_t time = get_clock_time();
+
 		mavlink_hil_actuator_controls_t hil_act_control = actuator_controls_from_outputs();
 
 		mavlink_message_t message{};
 		mavlink_msg_hil_actuator_controls_encode(param_mav_sys_id_, param_mav_comp_id_, &message, &hil_act_control);
 
-		//PX4_DEBUG("sending controls t=%ld (%ld)", _actuator_outputs.timestamp, hil_act_control.time_usec);
-
 		send_mavlink_message(message);
 
-		usleep(4000);
+		// cout << "send actuator at time : " << get_clock_time() << endl;
+
+		while (get_clock_time() - time < 3900 || get_clock_time() == 0) {
+			usleep(200);
+		}
 	}
 }
 
@@ -206,24 +213,33 @@ void Simulator::handle_message_hil_sensor(const mavlink_message_t *msg)
 
 	// gyro
 	if (((SensorSource)imu.fields_updated & SensorSource::GYRO) == SensorSource::GYRO) {
+		mavlink_mtx_.lock();
 		gyro_ << imu.xgyro, imu.ygyro, imu.zgyro;
+		mavlink_mtx_.unlock();
 		// cout << get_clock_time() << " gyro : " << imu.xgyro << imu.ygyro << imu.zgyro << endl;
 	}
 
 	// accel
 	if (((SensorSource)imu.fields_updated & SensorSource::ACCEL) == SensorSource::ACCEL) {
+		mavlink_mtx_.lock();
 		accel_ << imu.xacc, imu.yacc, imu.zacc;
+		mavlink_mtx_.unlock();
 		// cout << get_clock_time() << " accel : " << imu.xacc << imu.yacc << imu.zacc << endl;
 	}
 
 	// magnetometer
 	if (((SensorSource)imu.fields_updated & SensorSource::MAG) == SensorSource::MAG) {
+		mavlink_mtx_.lock();
 		mag_ << imu.xmag, imu.ymag, imu.zmag;
+		mavlink_mtx_.unlock();
+		// cout << get_clock_time() << " mag : " << mag_(0, 0) << " " << mag_(1, 0) << " " << mag_(2, 0) << endl;
 	}
 
 	// baro
 	if (((SensorSource)imu.fields_updated & SensorSource::BARO) == SensorSource::BARO) {
+		mavlink_mtx_.lock();
 		abs_pressure_ = imu.abs_pressure;
+		mavlink_mtx_.unlock();
 	}
 
 	// differential pressure
@@ -241,6 +257,10 @@ mavlink_hil_actuator_controls_t Simulator::actuator_controls_from_outputs()
 	const float pwm_center = (PWM_DEFAULT_MAX + PWM_DEFAULT_MIN) / 2;
 
 	int _system_type = param_mav_type_;
+
+	mavlink_mtx_.lock();
+	bool armed = armed_;
+	mavlink_mtx_.unlock();
 
 	/* scale outputs depending on system type */
 	if (_system_type == MAV_TYPE_QUADROTOR ||
@@ -280,6 +300,7 @@ mavlink_hil_actuator_controls_t Simulator::actuator_controls_from_outputs()
 			break;
 		}
 
+		mavlink_mtx_.lock();
 		for (unsigned i = 0; i < 16; i++) {
 			if (armed) {
 				if (i < n) {
@@ -296,10 +317,11 @@ mavlink_hil_actuator_controls_t Simulator::actuator_controls_from_outputs()
 				msg.controls[i] = 0.0f;
 			}
 		}
+		mavlink_mtx_.unlock();
 
 	} else {
 		/* fixed wing: scale throttle to 0..1 and other channels to -1..1 */
-
+		mavlink_mtx_.lock();
 		for (unsigned i = 0; i < 16; i++) {
 			if (armed) {
 				if (i != 4) {
@@ -316,6 +338,7 @@ mavlink_hil_actuator_controls_t Simulator::actuator_controls_from_outputs()
 				msg.controls[i] = 0.0f;
 			}
 		}
+		mavlink_mtx_.unlock();
 	}
 
 	msg.mode = mode_flag_custom;
@@ -331,17 +354,47 @@ mavlink_hil_actuator_controls_t Simulator::actuator_controls_from_outputs()
 
 void Simulator::send_heartbeat()
 {
+	mavlink_mtx_.lock();
+	bool armed = armed_;
+	mavlink_mtx_.unlock();
 	mavlink_heartbeat_t hb = {};
 	mavlink_message_t message = {};
 	hb.autopilot = 12;
-	hb.base_mode |= (armed) ? 128 : 0;
+	hb.base_mode |= armed ? 128 : 0;
 	mavlink_msg_heartbeat_encode(param_mav_sys_id_, param_mav_comp_id_, &message, &hb);
 	send_mavlink_message(message);
 }
 
 void Simulator::set_actuator_output(float * out, int num) {
+	mavlink_mtx_.lock();
 	for(int i = 0; i < 16; i++) {
 		if(i < num)
 			actuator_outputs_[i] = Math::limit(out[i], (float)PWM_DEFAULT_MIN, (float)PWM_DEFAULT_MAX);
 	}
+	mavlink_mtx_.unlock();
+}
+
+void Simulator::model_state_callback(const gazebo_msgs::ModelStatesConstPtr& model_state) {
+	model_mtx_.lock();
+	model_state_.model_name = model_state.get()->name[12];
+	model_state_.pose = model_state.get()->pose[12];
+	model_state_.twist = model_state.get()->twist[12];
+	model_state_.reference_frame = "world";
+	model_pose_position_ << model_state.get()->pose[12].position.x
+		, model_state.get()->pose[12].position.y
+		, model_state.get()->pose[12].position.z;
+	model_pose_orientation_ = Eigen::Quaterniond(model_state.get()->pose[12].orientation.w
+		, model_state.get()->pose[12].orientation.x
+		, model_state.get()->pose[12].orientation.y
+		, model_state.get()->pose[12].orientation.z);
+	model_twist_linear_ << model_state.get()->twist[12].linear.x
+		, model_state.get()->twist[12].linear.y
+		, model_state.get()->twist[12].linear.z;
+	model_twist_angular_ << model_state.get()->twist[12].angular.x
+		, model_state.get()->twist[12].angular.y
+		, model_state.get()->twist[12].angular.z;
+	model_state_updated_ = true;
+	model_mtx_.unlock();
+	// cout << model_state.get()->pose[12] << endl;
+	// cout << model_state.get()->twist[12] << endl;
 }

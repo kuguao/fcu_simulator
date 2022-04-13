@@ -6,13 +6,17 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Joy.h>
 
+#include <Eigen/Geometry>
+
 #include "simulator_mavlink.hpp"
 #include "clock.hpp"
 #include "_math.hpp"
+#include "fcu.hpp"
 
 using namespace std;
 
-Simulator* simulator;
+shared_ptr<Simulator> simulator;
+shared_ptr<Fcu> fcu;
 
 void joy_callback(const sensor_msgs::JoyConstPtr& msg) {
     float upward = msg->axes[1];
@@ -35,11 +39,24 @@ int main(int _argc, char** _argv) {
 
     ros::Subscriber joy_sub = n.subscribe("/joy", 5, joy_callback);
 
-    simulator = new Simulator;
+    simulator = make_shared<Simulator>(n);
+    fcu = make_shared<Fcu>(*simulator);
+    // Eigen::Vector3d a(1.0, 2.0, 5.0), b(10.0, 20.0, 30.0);
+    // cout << a.transpose() << " " << b.transpose() << " " << (a+=b).transpose() << " " << (b /= 2).transpose() << endl; 
 
+    // ros::Publisher model_state_pub_ = n.advertise<gazebo_msgs::ModelState>("/gazebo/set_model_state", 100);
+    // sleep(2);
+    // int i = 500;
+    // while (ros::ok())
+    // {
+    //     //simulator->set_model_twist_angular(Eigen::Vector3d(0.f, 0.f, 1.f));
+    //     while (!simulator->get_model_state_updated() && ros::ok()) {
+    //         ros::spinOnce();
+    //     }
+    //     simulator->clear_model_state_updated();
+    //     // cout << get_clock_time() / 1000 << " : "<< orie.x()  << " " << orie.y()  << " "  << orie.z()  << " "  << orie.w()  << " "  << endl;
+    // }
     ros::spin();
-
-    delete simulator;
 
     return 0;
 }

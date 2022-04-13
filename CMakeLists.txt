@@ -4,7 +4,7 @@ set(PROJECT_NAME fcu_simulator)
 project(${PROJECT_NAME})
 
 set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_BUILD_TYPE Release)
+set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_VERBOSE_MAKEFILE OFF)
 
 find_package(Gazebo REQUIRED)
@@ -32,6 +32,7 @@ else()
 endif()
 
 include_directories(/home/kugua/workspace/PX4_Firmware/PX4-Autopilot/mavlink/include/mavlink/v2.0/)
+include_directories(/home/kugua/workspace/catkin_ws/devel/include/)
 
 file(GLOB_RECURSE SOURCE_FILES src/*.cpp)
 add_executable(${PROJECT_NAME} ${SOURCE_FILES})
